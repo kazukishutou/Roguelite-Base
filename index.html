@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>廃墟遠征 Prototype 01</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrapper">
+    <header>
+      <h1>廃墟遠征 Prototype 01</h1>
+      <p>拠点から廃墟へ、選んだ3人の生存者が自律で遠征するローグライト風プロトタイプ。</p>
+    </header>
+
+    <div class="top-row">
+      <section class="panel status-panel">
+        <h2>選択メンバー</h2>
+        <div id="selected-status" class="status-list"></div>
+      </section>
+
+      <section class="panel button-panel">
+        <button id="startButton" class="game-button">遠征開始</button>
+        <button id="nextButton" class="game-button">次の日へ</button>
+        <p class="hint">遠征中は選択不可。選択は最大3人。</p>
+      </section>
+    </div>
+
+    <div class="main-row">
+      <section class="panel list-panel survivors-panel">
+        <h2>生存者一覧</h2>
+        <div id="survivorList" class="list-grid"></div>
+      </section>
+
+      <section class="panel game-panel" id="game-container"></section>
+
+      <section class="panel info-panel">
+        <h2>物資</h2>
+        <div id="supplyList" class="item-list"></div>
+        <h2>装備</h2>
+        <div id="gearList" class="item-list"></div>
+      </section>
+    </div>
+
+    <section class="panel log-panel">
+      <h2>イベントログ</h2>
+      <div id="eventLog" class="log-list"></div>
+    </section>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
