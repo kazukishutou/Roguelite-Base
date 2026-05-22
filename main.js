@@ -5,11 +5,11 @@ const BUILD_LEVELS = [0, 3, 7, 12, 18];
 const MIN_SCRAP_ON_MAP = 6;
 const DAY_LENGTH_MS = 150000;
 const TIME_PERIODS = [
-  { key: "morning", label: "朝", start: 0, tint: 0xfff0c8, alpha: 0.06, baseLight: 0.08 },
-  { key: "day", label: "昼", start: 0.2, tint: 0xffffff, alpha: 0.0, baseLight: 0.04 },
-  { key: "evening", label: "夕方", start: 0.42, tint: 0x8f4f32, alpha: 0.18, baseLight: 0.16 },
-  { key: "night", label: "夜", start: 0.62, tint: 0x020814, alpha: 0.48, baseLight: 0.42 },
-  { key: "midnight", label: "深夜", start: 0.82, tint: 0x01030a, alpha: 0.64, baseLight: 0.58 }
+  { key: "morning", label: "朝", start: 0, tint: 0xfff0c8, alpha: 0.06, baseLight: 0.05 },
+  { key: "day", label: "昼", start: 0.2, tint: 0xffffff, alpha: 0.0, baseLight: 0.02 },
+  { key: "evening", label: "夕方", start: 0.42, tint: 0x8f4f32, alpha: 0.18, baseLight: 0.1 },
+  { key: "night", label: "夜", start: 0.62, tint: 0x020814, alpha: 0.48, baseLight: 0.22 },
+  { key: "midnight", label: "深夜", start: 0.82, tint: 0x01030a, alpha: 0.64, baseLight: 0.3 }
 ];
 
 const STATE_LABELS = {
@@ -67,7 +67,8 @@ const SCRAP_TYPES = [
   { name: "金属片", color: 0x8f9690, value: 1 },
   { name: "布", color: 0x6f7f78, value: 1 },
   { name: "電子部品", color: 0x7f9ca0, value: 1 },
-  { name: "謎の箱", color: 0x9a8b68, value: 2 }
+  { name: "謎の箱", color: 0x9a8b68, value: 2 },
+  { name: "謎の部品", color: 0x9fbf86, value: 2 }
 ];
 
 class BaseCamp {
@@ -244,7 +245,11 @@ class ScrapManager {
       y = Phaser.Math.Between(100, GAME_HEIGHT - 108);
     } while (Phaser.Math.Distance.Between(x, y, BASE_POS.x, BASE_POS.y) < 155);
 
-    const type = Phaser.Utils.Array.GetRandom(SCRAP_TYPES);
+    const periodKey = this.scene.getTimePeriod?.().key || "day";
+    const nightPart = (periodKey === "night" || periodKey === "midnight") && Math.random() < 0.18;
+    const type = nightPart
+      ? SCRAP_TYPES.find((entry) => entry.name === "謎の部品")
+      : Phaser.Utils.Array.GetRandom(SCRAP_TYPES.filter((entry) => entry.name !== "謎の部品"));
     return {
       id: Phaser.Math.RND.uuid(),
       x,
@@ -277,7 +282,7 @@ class ScrapManager {
 
   removeById(id) {
     this.items = this.items.filter((item) => item.id !== id);
-    this.ensureCount(MIN_SCRAP_ON_MAP);
+    this.ensureCount(this.scene.getScrapTargetCount());
   }
 
   chooseFor(survivor) {
@@ -515,13 +520,21 @@ class Survivor {
     const canBuild = this.scene.scrap >= 2 && this.scene.baseLevel < 5;
     const stockBonus = this.scene.scrap >= 5 ? 0.18 : 0;
     const buildChance = canBuild ? this.buildChance + stockBonus + (this.energy < 55 ? 0.12 : 0) : 0;
-    if (canBuild && Math.random() < buildChance) {
+    const timeMod = this.scene.applyTimeBehaviorModifier(this);
+    if (timeMod.shouldReturn && Phaser.Math.Distance.Between(this.x, this.y, BASE_POS.x, BASE_POS.y) > 160) {
+      this.setState("returning");
+      this.target = this.homePosition;
+      this.say(this.scene.getTimeBasedBubbleText(this, "returning"), 2200);
+      return;
+    }
+
+    if (canBuild && Math.random() < buildChance * timeMod.buildWeight) {
       this.goBuild();
       return;
     }
 
     const hasScrap = this.scene.scraps.items.some((item) => !item.reservedBy);
-    if (hasScrap && Math.random() > this.idleChance) {
+    if (hasScrap && Math.random() > this.idleChance * timeMod.idleWeight && Math.random() < timeMod.exploreWeight) {
       this.search();
       return;
     }
@@ -544,15 +557,13 @@ class Survivor {
       this.targetScrapId = target.id;
       this.target = target;
       this.setState("movingToScrap");
-      this.log("move");
+      this.say(this.scene.getTimeBasedBubbleText(this, "move"), 2200);
     });
   }
 
   idleAroundBase() {
     this.setState("idle");
-    const lines = this.name === "ASH"
-      ? ["……。", "次はどこだ。", "遠くを見てくる。", "まだ平気。"]
-      : ["風が強いな。", "ここの柵、弱いな。", "無理はしない。", "何か聞こえた？"];
+    const lines = this.scene.getTimeBasedBubbleText(this, "idle", true);
     if (Math.random() < 0.72) this.say(Phaser.Utils.Array.GetRandom(lines), 1800);
     this.scene.time.delayedCall(Phaser.Math.Between(700, 1400) / this.scene.speedMultiplier, () => this.chooseNextTask());
   }
@@ -562,6 +573,20 @@ class Survivor {
     if (!destination) {
       this.search();
       return;
+    }
+
+    if (this.state === "movingToScrap") {
+      const timeMod = this.scene.applyTimeBehaviorModifier(this);
+      const distanceFromBase = Phaser.Math.Distance.Between(this.x, this.y, BASE_POS.x, BASE_POS.y);
+      const returnChance = (this.personality === "restless" ? 0.012 : 0.045) * (delta / 1000);
+      if (timeMod.shouldReturn && distanceFromBase > 230 && Math.random() < returnChance) {
+        this.scene.scraps.releaseBySurvivor(this.id);
+        this.targetScrapId = null;
+        this.target = this.homePosition;
+        this.setState("returning");
+        this.say(this.scene.getTimeBasedBubbleText(this, "returning"), 2200);
+        return;
+      }
     }
 
     const distance = Phaser.Math.Distance.Between(this.x, this.y, destination.x, destination.y);
@@ -615,7 +640,7 @@ class Survivor {
       if (Math.random() < 0.7) this.say(this.scrapLine(this.carryingType));
       this.log("secured");
       this.setState("returning");
-      this.log("returning");
+      this.say(this.scene.getTimeBasedBubbleText(this, "returning"), 2200);
     });
   }
 
@@ -638,14 +663,16 @@ class Survivor {
       金属片: "金属片。",
       布: "布か。",
       電子部品: "見えた。",
-      謎の箱: "変な箱だ。"
+      謎の箱: "変な箱だ。",
+      謎の部品: "夜に光ってた。"
     };
     const miloLines = {
       木材: "木材が使えそう。",
       金属片: "これは使えるかも。",
       布: "布が残ってる。",
       電子部品: "電子部品だ。",
-      謎の箱: "変な箱だな。"
+      謎の箱: "変な箱だな。",
+      謎の部品: "これ、何の部品だ？"
     };
     return (this.name === "ASH" ? ashLines : miloLines)[type] || "使えそう。";
   }
@@ -656,8 +683,8 @@ class Survivor {
     this.target = this.homePosition;
     this.setState("resting");
     const lines = this.name === "ASH"
-      ? ["少し休む。", "足が重い。", "まだ平気。"]
-      : ["少し休むね。", "火のそばにいる。", "今日は長いな。", "ここは静かだ。"];
+      ? this.scene.getTimeBasedBubbleText(this, "rest", true)
+      : this.scene.getTimeBasedBubbleText(this, "rest", true);
     this.say(Phaser.Utils.Array.GetRandom(lines), 2200);
     this.scene.time.delayedCall(this.restMs / this.scene.speedMultiplier, () => {
       if (!this.scene.isActiveSurvivor(this.id)) return;
@@ -671,8 +698,8 @@ class Survivor {
     this.target = this.buildPosition;
     this.setState("movingToBuild");
     const lines = this.name === "ASH"
-      ? ["ここを直す。", "やる。", "使える部品だ。"]
-      : ["先に直したい。", "ここの柵、弱いな。", "少しマシにしよう。"];
+      ? this.scene.getTimeBasedBubbleText(this, "build", true)
+      : this.scene.getTimeBasedBubbleText(this, "build", true);
     this.say(Phaser.Utils.Array.GetRandom(lines), 2100);
   }
 
@@ -684,7 +711,8 @@ class Survivor {
     this.setState("building");
     this.taskTimer = 0;
     this.scene.showBuildEffect(this);
-    this.scene.time.delayedCall((this.name === "MILO" ? 2300 : 2700) / this.scene.speedMultiplier, () => {
+    const buildMs = (this.name === "MILO" ? 2300 : 2700) * this.scene.applyTimeBehaviorModifier(this).buildSpeed;
+    this.scene.time.delayedCall(buildMs / this.scene.speedMultiplier, () => {
       if (!this.scene.isActiveSurvivor(this.id)) return;
       if (this.scene.consumeScrapForBuild(1)) {
         this.energy = Phaser.Math.Clamp(this.energy - (this.name === "ASH" ? 16 : 10), 0, 100);
@@ -703,7 +731,21 @@ class Survivor {
     this.stateText.setPosition(this.x + 8, this.y + 28);
     this.portraitImage.setPosition(this.x - 34, this.y - 47);
     this.drawRoute();
+    this.drawSignalLight();
     this.drawMarker(time);
+  }
+
+  drawSignalLight() {
+    const g = this.light;
+    g.clear();
+    const period = this.scene.getTimePeriod();
+    if (period.key !== "night" && period.key !== "midnight") return;
+    const radius = period.key === "midnight" ? 34 : 42;
+    const alpha = period.key === "midnight" ? 0.12 : 0.18;
+    g.fillStyle(this.color, alpha);
+    g.fillCircle(this.x, this.y, radius);
+    g.fillStyle(this.color, alpha * 0.8);
+    g.fillCircle(this.x, this.y, 16);
   }
 
   drawRoute() {
@@ -770,6 +812,8 @@ class ObserverScene extends Phaser.Scene {
     this.baseBuildProgress = 0;
     this.baseLevel = 1;
     this.speedMultiplier = 1;
+    this.dayElapsed = 0;
+    this.timePeriod = TIME_PERIODS[0];
     this.survivors = [];
     this.miloJoined = false;
   }
@@ -794,6 +838,8 @@ class ObserverScene extends Phaser.Scene {
   }
 
   update(time, delta) {
+    this.updateTime(delta);
+    this.updateLighting(time);
     this.survivors.forEach((survivor) => survivor.update(time, delta));
   }
 
@@ -844,6 +890,147 @@ class ObserverScene extends Phaser.Scene {
     return this.survivors.some((survivor) => survivor.id === id);
   }
 
+  updateTime(delta) {
+    const previousKey = this.timePeriod.key;
+    this.dayElapsed += delta * this.speedMultiplier;
+    while (this.dayElapsed >= DAY_LENGTH_MS) {
+      this.dayElapsed -= DAY_LENGTH_MS;
+      this.day += 1;
+    }
+    this.timePeriod = this.getTimePeriod();
+    if (this.timePeriod.key !== previousKey) {
+      this.onTimePeriodChanged(this.timePeriod);
+      this.updateHud();
+    }
+  }
+
+  getTimePeriod() {
+    const progress = this.dayElapsed / DAY_LENGTH_MS;
+    let period = TIME_PERIODS[0];
+    TIME_PERIODS.forEach((candidate) => {
+      if (progress >= candidate.start) period = candidate;
+    });
+    return period;
+  }
+
+  getScrapTargetCount() {
+    const key = this.timePeriod.key;
+    if (key === "midnight") return Math.max(4, MIN_SCRAP_ON_MAP - 2);
+    if (key === "night") return Math.max(5, MIN_SCRAP_ON_MAP - 1);
+    return MIN_SCRAP_ON_MAP;
+  }
+
+  onTimePeriodChanged(period) {
+    if (period.key === "evening") this.sayBase("そろそろ暗くなる。", 2200);
+    if (period.key === "night") this.sayBase("拠点の灯りを強める。", 2400);
+    if (period.key === "midnight") this.sayBase("火を絶やすな。", 2400);
+    if (period.key === "morning" && this.day > 1) this.sayBase("朝だ。", 1800);
+  }
+
+  updateLighting(time = 0) {
+    if (!this.lightOverlay || !this.baseLight) return;
+    const period = this.timePeriod;
+    this.lightOverlay.clear();
+    this.lightOverlay.fillStyle(period.tint, period.alpha);
+    this.lightOverlay.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    this.baseLight.clear();
+    const lightRadius = 92 + this.baseLevel * 24;
+    const pulse = 1 + Math.sin(time / 480) * 0.05;
+    this.baseLight.fillStyle(0xf2c46b, period.baseLight);
+    this.baseLight.fillCircle(BASE_POS.x, BASE_POS.y, lightRadius * pulse);
+    if (period.key === "night" || period.key === "midnight") {
+      this.baseLight.fillStyle(0xffd783, period.baseLight * 0.45);
+      this.baseLight.fillCircle(BASE_POS.x, BASE_POS.y, (lightRadius * 0.58) * pulse);
+      if (this.baseLevel >= 4) {
+        const blink = Math.sin(time / 240) > 0 ? 0.45 : 0.12;
+        this.baseLight.fillStyle(0xbdefff, blink);
+        this.baseLight.fillCircle(BASE_POS.x + 78, BASE_POS.y - 84, 28);
+      }
+      if (this.baseLevel >= 5) {
+        const sweepX = BASE_POS.x - 108 + Math.sin(time / 900) * 28;
+        this.baseLight.fillStyle(0xffdf8a, 0.2);
+        this.baseLight.fillCircle(sweepX, BASE_POS.y - 87, 44);
+      }
+    }
+  }
+
+  applyTimeBehaviorModifier(survivor) {
+    const key = this.timePeriod.key;
+    const restless = survivor.personality === "restless";
+    const base = {
+      exploreWeight: 1,
+      buildWeight: 1,
+      idleWeight: 1,
+      distanceRisk: 1,
+      explorePoolSize: restless ? 3 : 2,
+      buildSpeed: 1,
+      shouldReturn: false
+    };
+    if (key === "evening") {
+      base.exploreWeight = restless ? 0.82 : 0.62;
+      base.buildWeight = restless ? 1.05 : 1.25;
+      base.distanceRisk = restless ? 1.15 : 1.45;
+      base.explorePoolSize = restless ? 2 : 1;
+    }
+    if (key === "night") {
+      base.exploreWeight = restless ? 0.58 : 0.22;
+      base.buildWeight = restless ? 1.3 : 1.75;
+      base.idleWeight = 1.35;
+      base.distanceRisk = restless ? 1.55 : 2.3;
+      base.explorePoolSize = 1;
+      base.buildSpeed = 1.18;
+      base.shouldReturn = !restless || Math.random() < 0.35;
+    }
+    if (key === "midnight") {
+      base.exploreWeight = restless ? 0.34 : 0.08;
+      base.buildWeight = restless ? 1.15 : 1.55;
+      base.idleWeight = 1.8;
+      base.distanceRisk = restless ? 2.2 : 3.4;
+      base.explorePoolSize = 1;
+      base.buildSpeed = 1.35;
+      base.shouldReturn = !restless || Math.random() < 0.65;
+    }
+    if (key === "morning") {
+      base.exploreWeight = 1.15;
+      base.buildWeight = 0.95;
+    }
+    return base;
+  }
+
+  getTimeBasedBubbleText(survivor, action, asList = false) {
+    const key = this.timePeriod.key;
+    const restless = survivor.name === "ASH";
+    const common = {
+      move: restless ? ["行く。", "見えた。", "遠くを見てくる。"] : ["近場から見よう。", "これは使えるかも。"],
+      returning: restless ? ["戻る。", "急げば戻れる。"] : ["拠点へ戻ろう。", "無理はしない。"],
+      idle: restless ? ["……。", "次はどこだ。", "まだ平気。"] : ["風が強いな。", "ここの柵、弱いな。", "何か聞こえた？"],
+      rest: restless ? ["少し休む。", "足が重い。", "まだ平気。"] : ["少し休むね。", "火のそばにいる。", "今日は長いな。"],
+      build: restless ? ["ここを直す。", "やる。", "使える部品だ。"] : ["先に直したい。", "柵を見ておく。", "少しマシにしよう。"]
+    };
+    const night = {
+      evening: {
+        move: restless ? ["暗くなる前に戻る。", "少しだけ見てくる。"] : ["そろそろ引き返す。", "遠くは見えにくい。"],
+        idle: ["今日は早いな。", "暗くなる前に戻る。"]
+      },
+      night: {
+        move: restless ? ["まだ行ける。", "暗いな。"] : ["近場だけにする。", "夜はやめておこう。"],
+        returning: restless ? ["戻る。", "拠点の灯りが見える。"] : ["火のそばにいる。", "無理はしない。"],
+        idle: restless ? ["音が遠い。", "暗いな。"] : ["夜はやめておこう。", "柵を見ておく。"],
+        rest: restless ? ["まだ行ける。", "少し休む。"] : ["火のそばにいる。", "無理はしない。"]
+      },
+      midnight: {
+        move: restless ? ["少しだけ見てくる。", "急げば戻れる。"] : ["朝まで待とう。", "近場だけにする。"],
+        returning: ["静かすぎる。", "火を絶やすな。"],
+        idle: restless ? ["嫌な感じがする。", "誰か起きてる？"] : ["朝まで待とう。", "火のそばにいる。"],
+        rest: ["朝まで待とう。", "静かすぎる。"],
+        build: restless ? ["火を絶やすな。", "ここを直す。"] : ["柵を見ておく。", "火のそばにいる。"]
+      }
+    };
+    const lines = night[key]?.[action] || common[action] || ["……。"];
+    return asList ? lines : Phaser.Utils.Array.GetRandom(lines);
+  }
+
   createWorld() {
     this.cameras.main.setBackgroundColor("#18160f");
     const g = this.add.graphics();
@@ -879,28 +1066,31 @@ class ObserverScene extends Phaser.Scene {
     g.strokeRect(22, 22, GAME_WIDTH - 44, GAME_HEIGHT - 44);
     g.lineStyle(1, 0xafa06f, 0.06);
     g.strokeRect(52, 52, GAME_WIDTH - 104, GAME_HEIGHT - 104);
+
+    this.baseLight = this.add.graphics().setDepth(21);
+    this.lightOverlay = this.add.graphics().setDepth(20);
   }
 
   createHud() {
-    this.hudPanel = this.add.graphics();
+    this.hudPanel = this.add.graphics().setDepth(60);
     this.hudPanel.fillStyle(0x11100c, 0.72);
-    this.hudPanel.fillRoundedRect(20, 18, 328, 45, 5);
+    this.hudPanel.fillRoundedRect(20, 18, 408, 45, 5);
     this.hudPanel.lineStyle(1, 0x655c48, 0.55);
-    this.hudPanel.strokeRoundedRect(20, 18, 328, 45, 5);
+    this.hudPanel.strokeRoundedRect(20, 18, 408, 45, 5);
 
     this.hudText = this.add.text(34, 32, "", {
       fontFamily: "Consolas, Courier New, monospace",
       fontSize: "14px",
       color: "#d8d0bd"
-    });
-    this.buildBar = this.add.graphics();
+    }).setDepth(61);
+    this.buildBar = this.add.graphics().setDepth(61);
     this.updateHud();
 
     this.titleText = this.add.text(GAME_WIDTH - 28, 24, "サバイバル観察プロトタイプ 01", {
       fontFamily: "Consolas, Courier New, monospace",
       fontSize: "15px",
       color: "#c7b98e"
-    }).setOrigin(1, 0);
+    }).setOrigin(1, 0).setDepth(61);
   }
 
   createControls() {
@@ -916,12 +1106,13 @@ class ObserverScene extends Phaser.Scene {
   addButton(x, y, width, label, onClick) {
     const box = this.add.rectangle(x, y, width, 30, 0x1d1b15, 0.92)
       .setStrokeStyle(1, 0x7b7057, 0.8)
-      .setInteractive({ useHandCursor: true });
+      .setInteractive({ useHandCursor: true })
+      .setDepth(60);
     const text = this.add.text(x, y, label, {
       fontFamily: "Consolas, Courier New, monospace",
       fontSize: "12px",
       color: "#d8d0bd"
-    }).setOrigin(0.5);
+    }).setOrigin(0.5).setDepth(61);
 
     box.on("pointerover", () => box.setFillStyle(0x2a271e, 0.95));
     box.on("pointerout", () => box.setFillStyle(0x1d1b15, 0.92));
@@ -975,7 +1166,7 @@ class ObserverScene extends Phaser.Scene {
 
   updateHud() {
     const survivorCount = this.survivors ? this.survivors.length : 0;
-    this.hudText.setText(`日数 ${this.day}   資材 ${this.scrap}   拠点Lv ${this.baseLevel}   生存者 ${survivorCount}`);
+    this.hudText.setText(`日数 ${this.day} ${this.timePeriod.label}   資材 ${this.scrap}   拠点Lv ${this.baseLevel}   生存者 ${survivorCount}`);
     this.drawBuildProgress();
   }
 
@@ -1018,4 +1209,5 @@ const config = {
   }
 };
 
-new Phaser.Game(config);
+const survivalObserverGame = new Phaser.Game(config);
+window.survivalObserverGame = survivalObserverGame;
